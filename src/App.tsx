@@ -63,30 +63,41 @@ export default function App() {
 
   // Fetch initial data from server API
   useEffect(() => {
+    const safeJsonFetch = async (url: string) => {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) return null;
+        const text = await r.text();
+        return text ? JSON.parse(text) : null;
+      } catch {
+        return null;
+      }
+    };
+
     const fetchData = async () => {
       try {
-        const [targetsRes, scriptsRes, runsRes, schedRes, auditRes] = await Promise.allSettled([
-          fetch('/api/targets').then((r) => r.json()),
-          fetch('/api/scripts').then((r) => r.json()),
-          fetch('/api/runs').then((r) => r.json()),
-          fetch('/api/schedules').then((r) => r.json()),
-          fetch('/api/audit-logs').then((r) => r.json()),
+        const [targetsData, scriptsData, runsData, schedData, auditData] = await Promise.all([
+          safeJsonFetch('/api/targets'),
+          safeJsonFetch('/api/scripts'),
+          safeJsonFetch('/api/runs'),
+          safeJsonFetch('/api/schedules'),
+          safeJsonFetch('/api/audit-logs'),
         ]);
 
-        if (targetsRes.status === 'fulfilled' && Array.isArray(targetsRes.value)) {
-          setTargets(targetsRes.value);
+        if (Array.isArray(targetsData)) {
+          setTargets(targetsData);
         }
-        if (scriptsRes.status === 'fulfilled' && Array.isArray(scriptsRes.value)) {
-          setScripts(scriptsRes.value);
+        if (Array.isArray(scriptsData)) {
+          setScripts(scriptsData);
         }
-        if (runsRes.status === 'fulfilled' && Array.isArray(runsRes.value)) {
-          setRuns(runsRes.value);
+        if (Array.isArray(runsData)) {
+          setRuns(runsData);
         }
-        if (schedRes.status === 'fulfilled' && Array.isArray(schedRes.value)) {
-          setSchedules(schedRes.value);
+        if (Array.isArray(schedData)) {
+          setSchedules(schedData);
         }
-        if (auditRes.status === 'fulfilled' && Array.isArray(auditRes.value)) {
-          setAuditLogs(auditRes.value);
+        if (Array.isArray(auditData)) {
+          setAuditLogs(auditData);
         }
       } catch (err) {
         console.warn('API sync warning (using seeded local memory):', err);
@@ -100,8 +111,17 @@ export default function App() {
   const handlePingTarget = async (targetId: string) => {
     try {
       const res = await fetch(`/api/targets/${targetId}/ping`);
-      const data = await res.json();
-      setPingResults((prev) => ({ ...prev, [targetId]: data.latencyMs }));
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (typeof data.latencyMs === 'number') {
+            setPingResults((prev) => ({ ...prev, [targetId]: data.latencyMs }));
+            return;
+          }
+        }
+      }
+      throw new Error('Ping failed');
     } catch {
       const fallback = Math.floor(30 + Math.random() * 25);
       setPingResults((prev) => ({ ...prev, [targetId]: fallback }));
@@ -162,18 +182,27 @@ export default function App() {
           author: currentUser.name,
         }),
       });
-      const data = await res.json();
-      if (data.script) {
-        setScripts((prev) => {
-          const idx = prev.findIndex((s) => s.id === data.script.id);
-          if (idx >= 0) {
-            const copy = [...prev];
-            copy[idx] = data.script;
-            return copy;
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (data.script) {
+            setScripts((prev) => {
+              const idx = prev.findIndex((s) => s.id === data.script.id);
+              if (idx >= 0) {
+                const copy = [...prev];
+                copy[idx] = data.script;
+                return copy;
+              }
+              return [data.script, ...prev];
+            });
+            setActiveTab('library');
+            setEditingScript(null);
+            return;
           }
-          return [data.script, ...prev];
-        });
+        }
       }
+      throw new Error('Save failed');
     } catch {
       // Local fallback
       const scriptId = editingScript?.id || `script_${Date.now()}`;
@@ -229,9 +258,14 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ versionId, user: currentUser.name }),
       });
-      const data = await res.json();
-      if (data.script) {
-        setScripts((prev) => prev.map((s) => (s.id === scriptId ? data.script : s)));
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (data.script) {
+            setScripts((prev) => prev.map((s) => (s.id === scriptId ? data.script : s)));
+          }
+        }
       }
     } catch {
       setScripts((prev) =>
@@ -262,9 +296,14 @@ export default function App() {
           reviewer: currentUser.name,
         }),
       });
-      const data = await res.json();
-      if (data.script) {
-        setScripts((prev) => prev.map((s) => (s.id === scriptId ? data.script : s)));
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (data.script) {
+            setScripts((prev) => prev.map((s) => (s.id === scriptId ? data.script : s)));
+          }
+        }
       }
     } catch {
       setScripts((prev) =>
@@ -290,9 +329,14 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: currentUser.name }),
       });
-      const data = await res.json();
-      if (data.script) {
-        setScripts((prev) => prev.map((s) => (s.id === scriptId ? data.script : s)));
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (data.script) {
+            setScripts((prev) => prev.map((s) => (s.id === scriptId ? data.script : s)));
+          }
+        }
       }
     } catch {
       setScripts((prev) =>
@@ -329,10 +373,15 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...newSchedule, user: currentUser.name }),
       });
-      const data = await res.json();
-      if (data.schedule) {
-        setSchedules((prev) => [data.schedule, ...prev]);
-        return;
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (data.schedule) {
+            setSchedules((prev) => [data.schedule, ...prev]);
+            return;
+          }
+        }
       }
     } catch {
       // fallback
@@ -363,11 +412,16 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...newTarget, user: currentUser.name }),
       });
-      const data = await res.json();
-      if (data.target) {
-        setTargets((prev) => [...prev, data.target]);
-        setSelectedTargetId(data.target.id);
-        return;
+      if (res.ok) {
+        const text = await res.text();
+        if (text) {
+          const data = JSON.parse(text);
+          if (data.target) {
+            setTargets((prev) => [...prev, data.target]);
+            setSelectedTargetId(data.target.id);
+            return;
+          }
+        }
       }
     } catch {
       // fallback

@@ -338,101 +338,153 @@ async function startServer() {
     res.json(run);
   });
 
-  // Execute Test Run (Manual or Webhook or Scheduled)
-  app.post('/api/runs/execute', async (req, res) => {
-    const { scriptId, versionId, triggerType = 'manual', failStepIndex } = req.body;
-    const script = scripts.find((s) => s.id === scriptId);
-    if (!script) return res.status(404).json({ error: 'Script not found' });
+  // Execute Test Run (Manual, Direct Ad-hoc, Webhook or Scheduled)
+  const handleExecuteRun = async (req: express.Request, res: express.Response) => {
+    try {
+      const {
+        scriptId,
+        versionId,
+        scriptName,
+        targetUrl,
+        steps: directSteps,
+        triggerType = 'manual',
+        failStepIndex,
+      } = req.body || {};
 
-    const target = targets.find((t) => t.id === script.targetSiteId) || targets[0];
-    const version = versions.find((v) => v.id === (versionId || script.currentVersionId));
-    const steps = version?.steps || [];
+      let resolvedScriptName = scriptName || 'Automated Test Run';
+      let resolvedTargetUrl = targetUrl || 'https://picurici-cele-trei-case.ai.studio/';
+      let resolvedEnvironment: 'prod' | 'staging' | 'dev' = 'prod';
+      let resolvedSteps: ScriptStep[] = Array.isArray(directSteps) ? directSteps : [];
+      let resolvedScriptId = scriptId || `adhoc_${Date.now()}`;
+      let resolvedVersionId = versionId || `adhoc_ver_${Date.now()}`;
+      let retryCount = 1;
 
-    const runId = `run_${Date.now()}`;
-    const startedAt = new Date().toISOString();
-
-    // Execute each step sequentially
-    const stepResults: StepResult[] = [];
-    let hasFailure = false;
-
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i];
-      if (hasFailure) {
-        stepResults.push({
-          id: `step_res_${Date.now()}_${i}`,
-          runId,
-          stepIndex: i,
-          step,
-          status: 'skipped',
-          durationMs: 0,
-          screenshotUrl: stepResults[i - 1]?.screenshotUrl || '',
-          consoleLogs: [],
-          networkCalls: [],
-        });
-      } else {
-        const result = executeSimulationStep(
-          step,
-          i,
-          target.baseUrl,
-          target.name,
-          failStepIndex !== undefined ? Number(failStepIndex) : undefined
-        );
-        result.runId = runId;
-        stepResults.push(result);
-        if (result.status === 'failed') {
-          hasFailure = true;
+      if (scriptId) {
+        const script = scripts.find((s) => s.id === scriptId);
+        if (script) {
+          resolvedScriptName = script.name;
+          resolvedScriptId = script.id;
+          retryCount = script.retryCount ?? 1;
+          const target = targets.find((t) => t.id === script.targetSiteId) || targets[0];
+          resolvedTargetUrl = target.baseUrl;
+          resolvedEnvironment = target.environment;
+          const version = versions.find((v) => v.id === (versionId || script.currentVersionId));
+          resolvedVersionId = version?.id || script.currentVersionId;
+          if (version?.steps && (!resolvedSteps || resolvedSteps.length === 0)) {
+            resolvedSteps = version.steps;
+          }
         }
       }
+
+      if (!resolvedSteps || resolvedSteps.length === 0) {
+        resolvedSteps = [
+          {
+            id: 'step_fallback_1',
+            action: 'navigate',
+            value: '/',
+            description: 'Navigate to target page root',
+          },
+          {
+            id: 'step_fallback_2',
+            action: 'assert_visible',
+            selector: 'body',
+            description: 'Verify page body is rendered',
+          },
+        ];
+      }
+
+      const runId = `run_${Date.now()}`;
+      const startedAt = new Date().toISOString();
+
+      // Execute each step sequentially
+      const stepResults: StepResult[] = [];
+      let hasFailure = false;
+
+      for (let i = 0; i < resolvedSteps.length; i++) {
+        const step = resolvedSteps[i];
+        if (hasFailure) {
+          stepResults.push({
+            id: `step_res_${Date.now()}_${i}`,
+            runId,
+            stepIndex: i,
+            step,
+            status: 'skipped',
+            durationMs: 0,
+            screenshotUrl: stepResults[i - 1]?.screenshotUrl || '',
+            consoleLogs: [],
+            networkCalls: [],
+          });
+        } else {
+          const result = executeSimulationStep(
+            step,
+            i,
+            resolvedTargetUrl,
+            resolvedScriptName,
+            failStepIndex !== undefined ? Number(failStepIndex) : undefined
+          );
+          result.runId = runId;
+          stepResults.push(result);
+          if (result.status === 'failed') {
+            hasFailure = true;
+          }
+        }
+      }
+
+      const passedCount = stepResults.filter((s) => s.status === 'passed').length;
+      const failedCount = stepResults.filter((s) => s.status === 'failed').length;
+      const totalDuration = stepResults.reduce((acc, s) => acc + (s.durationMs || 0), 0);
+      const finishedAt = new Date(Date.now() + totalDuration).toISOString();
+
+      const newRun: Run = {
+        id: runId,
+        scriptId: resolvedScriptId,
+        scriptVersionId: resolvedVersionId,
+        scriptName: resolvedScriptName,
+        targetUrl: resolvedTargetUrl,
+        environment: resolvedEnvironment,
+        triggerType,
+        status: failedCount > 0 ? 'failed' : 'passed',
+        startedAt,
+        finishedAt,
+        durationMs: totalDuration,
+        stepsTotal: resolvedSteps.length,
+        stepsPassed: passedCount,
+        stepsFailed: failedCount,
+        errorSummary:
+          failedCount > 0
+            ? `Assertion failed at step ${stepResults.findIndex((s) => s.status === 'failed') + 1}: ${
+                stepResults.find((s) => s.status === 'failed')?.errorMessage
+              }`
+            : undefined,
+        retryAttempt: failedCount > 0 ? (retryCount > 0 ? 1 : 0) : 0,
+        stepResults,
+        shareableToken: `share_${runId}_${Math.random().toString(36).substring(2, 9)}`,
+      };
+
+      runs.unshift(newRun);
+
+      auditLogs.unshift({
+        id: `audit_${Date.now()}`,
+        userId: 'usr_runner',
+        userName: triggerType === 'manual' ? 'QA Engineer' : 'AutoQA Engine',
+        role: triggerType === 'manual' ? 'qa' : 'admin',
+        action: `Executed Run (${newRun.status.toUpperCase()})`,
+        entityType: 'run',
+        entityId: newRun.id,
+        entityName: resolvedScriptName,
+        timestamp: new Date().toISOString(),
+        details: `${newRun.stepsPassed}/${newRun.stepsTotal} steps passed in ${newRun.durationMs}ms [Trigger: ${triggerType}]`,
+      });
+
+      res.status(200).json({ run: newRun, ...newRun });
+    } catch (err: any) {
+      console.error('Execution handler error:', err);
+      res.status(500).json({ error: err.message || 'Failed to execute test run' });
     }
+  };
 
-    const passedCount = stepResults.filter((s) => s.status === 'passed').length;
-    const failedCount = stepResults.filter((s) => s.status === 'failed').length;
-    const totalDuration = stepResults.reduce((acc, s) => acc + s.durationMs, 0);
-
-    const finishedAt = new Date(Date.now() + totalDuration).toISOString();
-
-    const newRun: Run = {
-      id: runId,
-      scriptId: script.id,
-      scriptVersionId: version?.id || '',
-      scriptName: script.name,
-      targetUrl: target.baseUrl,
-      environment: target.environment,
-      triggerType,
-      status: failedCount > 0 ? 'failed' : 'passed',
-      startedAt,
-      finishedAt,
-      durationMs: totalDuration,
-      stepsTotal: steps.length,
-      stepsPassed: passedCount,
-      stepsFailed: failedCount,
-      errorSummary:
-        failedCount > 0
-          ? `Assertion failed at step ${stepResults.findIndex((s) => s.status === 'failed') + 1}: ${
-              stepResults.find((s) => s.status === 'failed')?.errorMessage
-            }`
-          : undefined,
-      retryAttempt: failedCount > 0 ? (script.retryCount > 0 ? 1 : 0) : 0,
-      stepResults,
-      shareableToken: `share_${runId}_${Math.random().toString(36).substring(2, 9)}`,
-    };
-
-    runs.unshift(newRun);
-
-    auditLogs.unshift({
-      id: `audit_${Date.now()}`,
-      userId: 'usr_runner',
-      userName: triggerType === 'manual' ? 'QA Engineer' : 'AutoQA Engine',
-      role: triggerType === 'manual' ? 'qa' : 'admin',
-      action: `Executed Run (${newRun.status.toUpperCase()})`,
-      entityType: 'run',
-      entityName: script.name,
-      timestamp: new Date().toISOString(),
-      details: `${newRun.stepsPassed}/${newRun.stepsTotal} steps passed in ${newRun.durationMs}ms [Trigger: ${triggerType}]`,
-    });
-
-    res.json(newRun);
-  });
+  app.post('/api/runs/execute', handleExecuteRun);
+  app.post('/api/runs/execute-now', handleExecuteRun);
 
   // Webhook Inbound Trigger
   app.post('/api/webhooks/:token', (req, res) => {
