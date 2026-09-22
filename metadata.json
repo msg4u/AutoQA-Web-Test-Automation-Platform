@@ -1,0 +1,6 @@
+{
+  "name": "AutoQA Web Test Automation Platform",
+  "description": "A web-based test automation platform for generating, reviewing, scheduling, and running automated tests with visual reports and AI script assistance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
