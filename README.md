@@ -130,5 +130,4 @@ Contributions are welcome. Please open an issue to discuss significant changes b
 ---
 
 ## License
-
-*(Add your chosen license — e.g., MIT — and include a `LICENSE` file in the repo root.)*
+This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
